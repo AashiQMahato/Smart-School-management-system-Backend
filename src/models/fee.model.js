@@ -142,7 +142,7 @@ const feeSchema = new mongoose.Schema(
 );
 
 // Pre-save middleware to calculate totals
-feeSchema.pre("save", function (next) {
+feeSchema.pre("save", function () {
   // Calculate total amount
   this.totalAmount = this.amount - this.discount + this.fine;
 

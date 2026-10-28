@@ -82,7 +82,7 @@ submissionSchema.index({ assignment: 1, status: 1 });
 submissionSchema.index({ submittedAt: -1 });
 
 // Pre-save middleware to check if submission is late
-submissionSchema.pre("save", async function (next) {
+submissionSchema.pre("save", async function () {
   if (this.isNew) {
     const Assignment = mongoose.model("Assignment");
     const assignment = await Assignment.findById(this.assignment);

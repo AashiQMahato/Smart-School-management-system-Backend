@@ -41,7 +41,7 @@ const academicYearSchema = new mongoose.Schema(
 );
 
 // Ensure only one current academic year
-academicYearSchema.pre("save", async function (next) {
+academicYearSchema.pre("save", async function () {
   if (this.isCurrent) {
     await this.constructor.updateMany(
       { _id: { $ne: this._id } },
@@ -52,7 +52,7 @@ academicYearSchema.pre("save", async function (next) {
 });
 
 // Validate end date is after start date
-academicYearSchema.pre("validate", function (next) {
+academicYearSchema.pre("validate", function () {
   if (this.endDate && this.startDate && this.endDate <= this.startDate) {
     this.invalidate("endDate", "End date must be after start date");
   }
