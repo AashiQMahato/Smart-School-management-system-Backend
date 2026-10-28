@@ -1,8 +1,12 @@
 import express from "express";
 import * as scheduleController from "../controllers/schedule.controller.js";
 import { authenticate, authorize } from "../middleware/auth.middleware.js";
+import { validateObjectIdParams } from "../utils/validation.js";
 
 const router = express.Router();
+
+// Malformed ids in the URL return 400 instead of a CastError 500
+validateObjectIdParams(router, ["id", "classId", "teacherId"]);
 
 // All routes require authentication
 router.use(authenticate);

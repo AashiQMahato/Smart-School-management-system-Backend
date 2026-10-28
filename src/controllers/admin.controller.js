@@ -11,6 +11,12 @@ import Attendance from "../models/attendance.model.js";
 import Result from "../models/result.model.js";
 import Fee from "../models/fee.model.js";
 import bcrypt from "bcryptjs";
+import { escapeRegex, parsePagination } from "../utils/validation.js";
+
+const normalizeEmail = (email) =>
+  typeof email === "string" ? email.trim().toLowerCase() : email;
+
+const MIN_PASSWORD_LENGTH = 6;
 
 /**
  * Admin Controller
@@ -48,13 +54,21 @@ class AdminController {
    */
   async createUser(req, res) {
     try {
-      const { name, email, password, role, phone, ...roleData } = req.body;
+      const { name, password, role, phone, ...roleData } = req.body;
+      const email = normalizeEmail(req.body.email);
 
       // Validate required fields
       if (!name || !email || !password || !role || !phone) {
         return res.status(400).json({
           success: false,
           message: "Required fields: name, email, password, role, phone",
+        });
+      }
+
+      if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+        return res.status(400).json({
+          success: false,
+          message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
         });
       }
 
@@ -186,30 +200,34 @@ class AdminController {
    */
   async getAllUsers(req, res) {
     try {
-      const { role, search, page = 1, limit = 50 } = req.query;
+      const { role, search } = req.query;
+      const { page, limit, skip } = parsePagination(
+        req.query.page,
+        req.query.limit,
+        { defaultLimit: 50, maxLimit: 500 },
+      );
 
       const query = {};
-      if (role) query.role = role;
+      if (role) query.role = String(role);
       if (search) {
+        const pattern = escapeRegex(search);
         query.$or = [
-          { name: { $regex: search, $options: "i" } },
-          { email: { $regex: search, $options: "i" } },
+          { name: { $regex: pattern, $options: "i" } },
+          { email: { $regex: pattern, $options: "i" } },
         ];
       }
 
-      const skip = (page - 1) * limit;
       const total = await User.countDocuments(query);
       const users = await User.find(query)
-        .select("-password")
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(parseInt(limit));
+        .limit(limit);
 
       res.status(200).json({
         success: true,
         count: users.length,
         total,
-        page: parseInt(page),
+        page,
         pages: Math.ceil(total / limit),
         data: users,
       });
@@ -261,7 +279,7 @@ class AdminController {
     try {
       const { id } = req.params;
 
-      const user = await User.findById(id).select("-password");
+      const user = await User.findById(id);
       if (!user) {
         return res.status(404).json({
           success: false,
@@ -324,7 +342,8 @@ class AdminController {
   async updateUser(req, res) {
     try {
       const { id } = req.params;
-      const { name, email, phone } = req.body;
+      const { name, phone } = req.body;
+      const email = normalizeEmail(req.body.email);
 
       const user = await User.findById(id);
       if (!user) {
@@ -381,7 +400,10 @@ class AdminController {
       const { id } = req.params;
       const { newPassword } = req.body;
 
-      if (!newPassword || newPassword.length < 6) {
+      if (
+        typeof newPassword !== "string" ||
+        newPassword.length < MIN_PASSWORD_LENGTH
+      ) {
         return res.status(400).json({
           success: false,
           message: "Password must be at least 6 characters",
@@ -398,6 +420,8 @@ class AdminController {
 
       const hashedPassword = await bcrypt.hash(newPassword, 10);
       user.password = hashedPassword;
+      // Invalidate sessions issued with the old password
+      user.passwordChangedAt = new Date();
       await user.save();
 
       res.status(200).json({
@@ -419,6 +443,13 @@ class AdminController {
   async deleteUser(req, res) {
     try {
       const { id } = req.params;
+
+      if (String(req.user._id) === String(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "You cannot delete your own account",
+        });
+      }
 
       const user = await User.findById(id);
       if (!user) {
@@ -483,7 +514,6 @@ class AdminController {
     try {
       const {
         name,
-        email,
         password,
         phone,
         classId,
@@ -495,12 +525,20 @@ class AdminController {
         address,
         admissionNumber,
       } = req.body;
+      const email = normalizeEmail(req.body.email);
 
       // Validate required fields
       if (!name || !email || !password || !phone) {
         return res.status(400).json({
           success: false,
           message: "Required fields: name, email, password, phone",
+        });
+      }
+
+      if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+        return res.status(400).json({
+          success: false,
+          message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
         });
       }
 
@@ -620,10 +658,9 @@ class AdminController {
 
       // Apply search filter on user name
       if (search) {
+        const term = String(search).toLowerCase();
         students = students.filter(
-          (s) =>
-            s.userId &&
-            s.userId.name?.toLowerCase().includes(search.toLowerCase()),
+          (s) => s.userId && s.userId.name?.toLowerCase().includes(term),
         );
       }
 

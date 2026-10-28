@@ -10,8 +10,12 @@ import {
   deleteResult,
 } from "../controllers/result.controller.js";
 import { authenticate, authorize } from "../middleware/auth.middleware.js";
+import { validateObjectIdParams } from "../utils/validation.js";
 
 const router = express.Router();
+
+// Malformed ids in the URL return 400 instead of a CastError 500
+validateObjectIdParams(router, ["id", "classId", "studentId"]);
 
 // Protect all routes
 router.use(authenticate);
