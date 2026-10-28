@@ -42,7 +42,10 @@ class ExamResultService {
       );
     }
 
-    const exam = await Exam.findByIdAndUpdate(id, data, { new: true })
+    const exam = await Exam.findByIdAndUpdate(id, data, {
+      new: true,
+      runValidators: true,
+    })
       .populate("classes", "name section academicYear")
       .populate("createdBy", "name");
     return exam;
@@ -119,7 +122,9 @@ class ExamResultService {
 
   async enterMarks(examId, examSubjectId, marks, teacherId) {
     const examSubject = await ExamSubject.findById(examSubjectId);
-    if (!examSubject) throw new Error("Exam subject not found");
+    if (!examSubject || String(examSubject.examId) !== String(examId)) {
+      throw new Error("Exam subject not found");
+    }
 
     const exam = await Exam.findById(examId).select(
       "_id name examType academicYear isPublished",
@@ -159,8 +164,25 @@ class ExamResultService {
     const results = [];
     const errors = [];
 
+    // Marks can only be entered for students enrolled in the exam subject's class
+    const classStudentIds = new Set(
+      (
+        await Student.find({ classId: examSubject.classId })
+          .select("_id")
+          .lean()
+      ).map((st) => String(st._id)),
+    );
+
     for (const m of marks) {
       try {
+        if (!classStudentIds.has(String(m?.studentId))) {
+          errors.push({
+            studentId: m?.studentId,
+            message: "Student is not in this class",
+          });
+          continue;
+        }
+
         let result = await Result.findOne({
           examId,
           studentId: m.studentId,

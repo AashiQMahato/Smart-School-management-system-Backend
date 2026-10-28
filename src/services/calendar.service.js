@@ -137,8 +137,8 @@ class CalendarService {
       query.isPublished = true;
     }
 
-    // Published filter for admin
-    if (filters.isPublished !== undefined) {
+    // Published filter for admin (non-admins only ever see published events)
+    if (filters.role === "admin" && filters.isPublished !== undefined) {
       query.isPublished =
         filters.isPublished === "true" || filters.isPublished === true;
     }

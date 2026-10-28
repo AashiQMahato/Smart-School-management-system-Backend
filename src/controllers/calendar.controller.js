@@ -6,12 +6,39 @@
 import calendarService from "../services/calendar.service.js";
 import Student from "../models/student.model.js";
 import Parent from "../models/parent.model.js";
+import { isTeacherOfClass } from "../utils/access.js";
+import { pick } from "../utils/validation.js";
+
+const ACADEMIC_YEAR_FIELDS = [
+  "name",
+  "startDate",
+  "endDate",
+  "isCurrent",
+  "description",
+];
+const EVENT_FIELDS = [
+  "title",
+  "description",
+  "startDate",
+  "endDate",
+  "eventType",
+  "roleVisibility",
+  "classId",
+  "academicYear",
+  "isPublished",
+  "isAllDay",
+  "color",
+  "linkedEntity",
+];
 
 // ==================== ACADEMIC YEAR ====================
 
 export const createAcademicYear = async (req, res) => {
   try {
-    const data = { ...req.body, createdBy: req.user._id };
+    const data = {
+      ...pick(req.body, ACADEMIC_YEAR_FIELDS),
+      createdBy: req.user._id,
+    };
     const academicYear = await calendarService.createAcademicYear(data);
     res.status(201).json({ success: true, data: academicYear });
   } catch (error) {
@@ -41,7 +68,7 @@ export const updateAcademicYear = async (req, res) => {
   try {
     const academicYear = await calendarService.updateAcademicYear(
       req.params.id,
-      req.body,
+      pick(req.body, ACADEMIC_YEAR_FIELDS),
     );
     res.json({ success: true, data: academicYear });
   } catch (error) {
@@ -62,7 +89,7 @@ export const deleteAcademicYear = async (req, res) => {
 
 export const createEvent = async (req, res) => {
   try {
-    const data = { ...req.body, createdBy: req.user._id };
+    const data = { ...pick(req.body, EVENT_FIELDS), createdBy: req.user._id };
     const event = await calendarService.createEvent(data);
     res.status(201).json({ success: true, data: event });
   } catch (error) {
@@ -86,6 +113,16 @@ export const getEvents = async (req, res) => {
 export const getEventById = async (req, res) => {
   try {
     const event = await calendarService.getEventById(req.params.id);
+
+    // Non-admins can only read published events visible to their role
+    if (
+      req.user.role !== "admin" &&
+      (!event.isPublished ||
+        !(event.roleVisibility || []).includes(req.user.role))
+    ) {
+      return res.status(404).json({ success: false, message: "Event not found" });
+    }
+
     res.json({ success: true, data: event });
   } catch (error) {
     res.status(404).json({ success: false, message: error.message });
@@ -94,7 +131,10 @@ export const getEventById = async (req, res) => {
 
 export const updateEvent = async (req, res) => {
   try {
-    const event = await calendarService.updateEvent(req.params.id, req.body);
+    const event = await calendarService.updateEvent(
+      req.params.id,
+      pick(req.body, EVENT_FIELDS),
+    );
     res.json({ success: true, data: event });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -191,8 +231,14 @@ export const createTeacherEvent = async (req, res) => {
         message: "Teachers must specify a class for event creation",
       });
     }
+    if (!(await isTeacherOfClass(req.user, req.body.classId))) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only create events for classes you teach",
+      });
+    }
     const data = {
-      ...req.body,
+      ...pick(req.body, EVENT_FIELDS),
       createdBy: req.user._id,
       // Teachers cannot set admin-level visibility
       roleVisibility: ["teacher", "student", "parent"],

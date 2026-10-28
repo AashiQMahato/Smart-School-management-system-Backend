@@ -5,6 +5,7 @@ import Class from "../models/class.model.js";
 import Subject from "../models/subject.model.js";
 import Schedule from "../models/schedule.model.js";
 import mongoose from "mongoose";
+import { canAccessStudent, isTeacherOfClass } from "../utils/access.js";
 
 /**
  * Attendance Controller
@@ -34,6 +35,24 @@ export const markAttendance = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Class, subject, date, and attendance records are required",
+      });
+    }
+
+    if (
+      !mongoose.isValidObjectId(classId) ||
+      !mongoose.isValidObjectId(subjectId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid classId or subjectId",
+      });
+    }
+
+    const attendanceDateCheck = new Date(date);
+    if (Number.isNaN(attendanceDateCheck.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid date",
       });
     }
 
@@ -116,9 +135,11 @@ export const markAttendance = async (req, res) => {
       const { studentId, status, remarks } = record;
 
       try {
-        // Verify student exists
-        const student = await Student.findById(studentId);
-        if (!student) {
+        // Verify student exists and belongs to this class
+        const student = mongoose.isValidObjectId(studentId)
+          ? await Student.findById(studentId).select("classId")
+          : null;
+        if (!student || String(student.classId) !== String(classId)) {
           errors.push({
             studentId,
             message: "Invalid student",
@@ -548,6 +569,12 @@ export const getAttendanceByStudent = async (req, res) => {
           message: "Student ID is required",
         });
       }
+      if (!(await canAccessStudent(user, studentId))) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only view attendance for students you teach",
+        });
+      }
       targetStudentId = studentId;
     } else if (user.role === "parent") {
       // Parents can view their children's attendance
@@ -568,7 +595,7 @@ export const getAttendanceByStudent = async (req, res) => {
         });
       }
 
-      if (!parentRecord.children.some((id) => id.toString() === studentId)) {
+      if (!parentRecord.children.some((id) => id.toString() === String(studentId))) {
         return res.status(403).json({
           success: false,
           message: "You can only view your children's attendance",
@@ -788,22 +815,19 @@ export const getAttendanceStats = async (req, res) => {
       });
     }
 
+    if (
+      !mongoose.isValidObjectId(classId) ||
+      (subjectId && !mongoose.isValidObjectId(subjectId))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid classId or subjectId",
+      });
+    }
+
     // If teacher, verify they teach this class
     if (user.role === "teacher") {
-      const teacherRecord = await Teacher.findOne({ userId: user._id });
-      if (!teacherRecord) {
-        return res.status(403).json({
-          success: false,
-          message: "Teacher profile not found",
-        });
-      }
-
-      const schedule = await Schedule.findOne({
-        classId,
-        teacherId: teacherRecord._id,
-      });
-
-      if (!schedule) {
+      if (!(await isTeacherOfClass(user, classId))) {
         return res.status(403).json({
           success: false,
           message: "You can only view statistics for your assigned classes",
