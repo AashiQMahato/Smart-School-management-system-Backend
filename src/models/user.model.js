@@ -29,6 +29,13 @@ const userSchema = new mongoose.Schema(
     password: {
       type: String,
       required: [true, "Password is required"],
+      select: false,
+    },
+    // Password Changed At - used to invalidate tokens issued before a change
+    passwordChangedAt: {
+      type: Date,
+      default: null,
+      select: false,
     },
     // Role - Student / Parent / Teacher / Admin
     role: {
@@ -66,12 +73,25 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: true, // Adds createdAt and updatedAt
+    toJSON: {
+      transform: (doc, ret) => {
+        delete ret.password;
+        delete ret.passwordChangedAt;
+        return ret;
+      },
+    },
+    toObject: {
+      transform: (doc, ret) => {
+        delete ret.password;
+        delete ret.passwordChangedAt;
+        return ret;
+      },
+    },
   },
 );
 
 // Indexes for faster queries
 userSchema.index({ role: 1 });
-userSchema.index({ email: 1 });
 userSchema.index({ profileId: 1 });
 
 // Virtual for user info without password
