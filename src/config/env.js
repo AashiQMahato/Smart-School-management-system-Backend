@@ -5,6 +5,7 @@
 
 const DEFAULT_CORS_ORIGINS = [
   "https://smart-school-management-system-frontend.onrender.com",
+  "https://smart-school-management-system-frontend-sieb.onrender.com",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "http://localhost:3000",
