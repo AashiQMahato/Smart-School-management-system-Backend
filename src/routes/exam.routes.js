@@ -26,8 +26,18 @@ import {
   getStudentPublishedExams,
   getChildPublishedExams,
 } from "../controllers/exam.controller.js";
+import { validateObjectIdParams } from "../utils/validation.js";
 
 const router = express.Router();
+
+// Malformed ids in the URL return 400 instead of a CastError 500
+validateObjectIdParams(router, [
+  "id",
+  "examId",
+  "examSubjectId",
+  "studentId",
+  "classId",
+]);
 
 router.use(authenticate);
 

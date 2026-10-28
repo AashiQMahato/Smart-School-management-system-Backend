@@ -121,6 +121,7 @@ class AssignmentController {
         req.params.id,
         req.body,
         req.user._id,
+        req.user.profileId,
       );
 
       res.status(200).json({
@@ -237,6 +238,7 @@ class AssignmentController {
       const submissionData = {
         assignment: req.params.id,
         student: req.user._id,
+        studentProfileId: req.user.profileId,
         files: req.body.files,
         submissionNotes: req.body.submissionNotes,
       };
@@ -291,6 +293,19 @@ class AssignmentController {
       const submission = await submissionService.getSubmissionById(
         req.params.id,
       );
+
+      // Object-level access: owner student, the assignment's teacher, the
+      // student's linked parent, or an admin
+      const canView = await submissionService.canUserViewSubmission(
+        req.user,
+        submission,
+      );
+      if (!canView) {
+        return res.status(403).json({
+          success: false,
+          message: "You do not have permission to view this submission",
+        });
+      }
 
       res.status(200).json({
         success: true,

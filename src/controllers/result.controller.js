@@ -1,9 +1,10 @@
 import Result from "../models/result.model.js";
 import Student from "../models/student.model.js";
-import Teacher from "../models/teacher.model.js";
-import Parent from "../models/parent.model.js";
 import Subject from "../models/subject.model.js";
-import Class from "../models/class.model.js";
+import { canAccessStudent, isTeacherOfClass } from "../utils/access.js";
+
+const forbidden = (res, message) =>
+  res.status(403).json({ success: false, message });
 
 /**
  * Create a new result entry
@@ -24,6 +25,12 @@ export const createResult = async (req, res) => {
     } = req.body;
 
     // Validate student
+    if (!studentId || !subjectId) {
+      return res.status(400).json({
+        success: false,
+        message: "studentId and subjectId are required",
+      });
+    }
     const student = await Student.findById(studentId);
     if (!student) {
       return res.status(404).json({
@@ -39,6 +46,21 @@ export const createResult = async (req, res) => {
         success: false,
         message: "Subject not found",
       });
+    }
+
+    const targetClassId = classId || student.classId;
+
+    // Teachers may only enter results for students of a class/subject they teach
+    if (req.user.role === "teacher") {
+      if (
+        String(student.classId) !== String(targetClassId) ||
+        !(await isTeacherOfClass(req.user, targetClassId, subjectId))
+      ) {
+        return forbidden(
+          res,
+          "You can only enter results for classes and subjects you teach",
+        );
+      }
     }
 
     // Get teacher profile for enteredBy
@@ -126,6 +148,30 @@ export const createBulkResults = async (req, res) => {
       });
     }
 
+    if (!classId || !subjectId) {
+      return res.status(400).json({
+        success: false,
+        message: "classId and subjectId are required",
+      });
+    }
+
+    if (
+      req.user.role === "teacher" &&
+      !(await isTeacherOfClass(req.user, classId, subjectId))
+    ) {
+      return forbidden(
+        res,
+        "You can only enter results for classes and subjects you teach",
+      );
+    }
+
+    // Only students enrolled in the class can receive results
+    const classStudentIds = new Set(
+      (await Student.find({ classId }).select("_id").lean()).map((st) =>
+        String(st._id),
+      ),
+    );
+
     // Get teacher profile for enteredBy
     let enteredById = null;
     if (req.user.role === "teacher" && req.user.profileId) {
@@ -137,6 +183,14 @@ export const createBulkResults = async (req, res) => {
 
     for (const result of results) {
       try {
+        if (!classStudentIds.has(String(result?.studentId))) {
+          errors.push({
+            studentId: result?.studentId,
+            message: "Student is not in this class",
+          });
+          continue;
+        }
+
         // Check for duplicate
         const existing = await Result.findOne({
           studentId: result.studentId,
@@ -202,6 +256,13 @@ export const getResultsByClass = async (req, res) => {
     const { classId } = req.params;
     const { examType, subjectId, academicYear, isPublished } = req.query;
 
+    if (
+      req.user.role === "teacher" &&
+      !(await isTeacherOfClass(req.user, classId))
+    ) {
+      return forbidden(res, "You can only view results for classes you teach");
+    }
+
     const query = { classId };
     if (examType) query.examType = examType;
     if (subjectId) query.subjectId = subjectId;
@@ -244,22 +305,15 @@ export const getResultsByStudent = async (req, res) => {
     const { studentId } = req.params;
     const { examType, subjectId, academicYear, isPublished } = req.query;
 
-    // Authorization check
-    if (req.user.role === "student") {
-      if (!req.user.profileId || req.user.profileId.toString() !== studentId) {
-        return res.status(403).json({
-          success: false,
-          message: "You can only view your own results",
-        });
-      }
-    } else if (req.user.role === "parent") {
-      const parent = await Parent.findById(req.user.profileId);
-      if (!parent || !parent.children.some((c) => c.toString() === studentId)) {
-        return res.status(403).json({
-          success: false,
-          message: "You can only view your children's results",
-        });
-      }
+    // Authorization check (student: own, parent: children, teacher: own classes)
+    if (!(await canAccessStudent(req.user, studentId))) {
+      const message =
+        req.user.role === "student"
+          ? "You can only view your own results"
+          : req.user.role === "parent"
+            ? "You can only view your children's results"
+            : "You can only view results for students you teach";
+      return forbidden(res, message);
     }
 
     const query = { studentId };
@@ -360,6 +414,23 @@ export const updateResult = async (req, res) => {
         success: false,
         message: "Result not found",
       });
+    }
+
+    if (req.user.role === "teacher") {
+      if (
+        !(await isTeacherOfClass(req.user, result.classId, result.subjectId))
+      ) {
+        return forbidden(
+          res,
+          "You can only update results for classes and subjects you teach",
+        );
+      }
+      if (result.isPublished) {
+        return res.status(400).json({
+          success: false,
+          message: "Result is published and cannot be edited",
+        });
+      }
     }
 
     // Update fields

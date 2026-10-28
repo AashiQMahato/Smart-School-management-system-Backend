@@ -1,20 +1,36 @@
 import Submission from "../models/submission.model.js";
 import Assignment from "../models/assignment.model.js";
+import Student from "../models/student.model.js";
+import Parent from "../models/parent.model.js";
+import { parsePagination } from "../utils/validation.js";
 
 class SubmissionService {
   // Create submission (student submits assignment)
   async createSubmission(submissionData) {
     try {
-      const { assignment, student, files, submissionNotes } = submissionData;
+      const { assignment, student, studentProfileId, files, submissionNotes } =
+        submissionData;
 
       // Check if assignment exists and is published
       const assignmentDoc = await Assignment.findById(assignment);
-      if (!assignmentDoc) {
+      if (!assignmentDoc || !assignmentDoc.isActive) {
         throw new Error("Assignment not found");
       }
 
       if (assignmentDoc.status !== "published") {
         throw new Error("Assignment is not published yet");
+      }
+
+      // Student must belong to the assignment's class
+      const studentProfile = studentProfileId
+        ? await Student.findById(studentProfileId).select("classId userId")
+        : await Student.findOne({ userId: student }).select("classId userId");
+      if (
+        !studentProfile ||
+        String(studentProfile.userId) !== String(student) ||
+        String(studentProfile.classId) !== String(assignmentDoc.class)
+      ) {
+        throw new Error("Unauthorized to submit this assignment");
       }
 
       // Check if already submitted
@@ -126,9 +142,11 @@ class SubmissionService {
         query.isLate = filters.isLate === "true";
       }
 
-      const page = parseInt(filters.page) || 1;
-      const limit = parseInt(filters.limit) || 20;
-      const skip = (page - 1) * limit;
+      const { page, limit, skip } = parsePagination(
+        filters.page,
+        filters.limit,
+        { defaultLimit: 20 },
+      );
 
       const submissions = await Submission.find(query)
         .populate("student", "name email")
@@ -169,9 +187,10 @@ class SubmissionService {
         query.assignment = { $in: assignmentIds };
       }
 
-      const page = parseInt(filters.page) || 1;
-      const limit = parseInt(filters.limit) || 10;
-      const skip = (page - 1) * limit;
+      const { page, limit, skip } = parsePagination(
+        filters.page,
+        filters.limit,
+      );
 
       const submissions = await Submission.find(query)
         .populate({
@@ -227,10 +246,46 @@ class SubmissionService {
     }
   }
 
+  // Object-level access check for a (populated) submission
+  async canUserViewSubmission(user, submission) {
+    if (!user || !submission) return false;
+    if (user.role === "admin") return true;
+
+    const studentUserId = String(submission.student?._id || submission.student);
+
+    if (user.role === "student") {
+      return studentUserId === String(user._id);
+    }
+
+    if (user.role === "teacher") {
+      const teacherUserId =
+        submission.assignment?.teacher?._id || submission.assignment?.teacher;
+      return String(teacherUserId) === String(user._id);
+    }
+
+    if (user.role === "parent") {
+      if (!user.profileId) return false;
+      const parent = await Parent.findById(user.profileId)
+        .select("children")
+        .lean();
+      if (!parent?.children?.length) return false;
+      return !!(await Student.exists({
+        _id: { $in: parent.children },
+        userId: studentUserId,
+      }));
+    }
+
+    return false;
+  }
+
   // Grade submission (teacher)
   async gradeSubmission(submissionId, gradeData, teacherId) {
     try {
-      const { marksObtained, feedback } = gradeData;
+      const { feedback } = gradeData;
+      const marksObtained =
+        gradeData.marksObtained === "" || gradeData.marksObtained == null
+          ? NaN
+          : Number(gradeData.marksObtained);
 
       const submission =
         await Submission.findById(submissionId).populate("assignment");
@@ -246,6 +301,7 @@ class SubmissionService {
 
       // Validate marks
       if (
+        !Number.isFinite(marksObtained) ||
         marksObtained < 0 ||
         marksObtained > submission.assignment.totalMarks
       ) {
@@ -295,7 +351,6 @@ class SubmissionService {
       }
 
       // Get all students in the class
-      const Student = (await import("../models/student.model.js")).default;
       const students = await Student.find({
         classId: assignment.class._id,
       }).populate("userId", "name email");
@@ -307,6 +362,7 @@ class SubmissionService {
       // Filter out students who have submitted
       const nonSubmitters = students.filter(
         (student) =>
+          student.userId &&
           !submittedStudentIds.includes(student.userId._id.toString()),
       );
 

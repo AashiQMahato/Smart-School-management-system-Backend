@@ -3,8 +3,94 @@ import Submission from "../models/submission.model.js";
 import Class from "../models/class.model.js";
 import Subject from "../models/subject.model.js";
 import Teacher from "../models/teacher.model.js";
+import { escapeRegex, parsePagination, pick } from "../utils/validation.js";
+
+// Fields a teacher/admin may set on an assignment
+const ASSIGNMENT_FIELDS = [
+  "title",
+  "description",
+  "subject",
+  "class",
+  "totalMarks",
+  "dueDate",
+  "attachments",
+  "status",
+];
 
 class AssignmentService {
+  // Validate class/subject exist, belong together, and (optionally) that the
+  // teacher profile is allowed to post for them
+  async validateClassSubjectForTeacher(classId, subjectId, teacherProfileId) {
+    // Validate class exists
+    const classExists = await Class.findById(classId);
+    if (!classExists) {
+      throw new Error("Class not found");
+    }
+
+    // Validate subject exists
+    const subjectExists = await Subject.findById(subjectId);
+    if (!subjectExists) {
+      throw new Error("Subject not found");
+    }
+
+    // Validate subject belongs to class when subject is scoped to specific classes
+    const subjectAllowedClassIds = Array.isArray(subjectExists.classIds)
+      ? subjectExists.classIds.map((id) => id.toString())
+      : [];
+    const legacyAllowed = subjectExists.classId
+      ? [subjectExists.classId.toString()]
+      : [];
+
+    const allowed = [
+      ...new Set([...subjectAllowedClassIds, ...legacyAllowed]),
+    ];
+    if (allowed.length > 0 && !allowed.includes(classExists._id.toString())) {
+      throw new Error(
+        "Selected subject does not belong to the selected class",
+      );
+    }
+
+    // Validate teacher is allowed to post for this class/subject (teacher routes and admin-on-behalf)
+    if (teacherProfileId) {
+      const teacherProfile = await Teacher.findById(teacherProfileId).select(
+        "assignedSubjects assignedClasses",
+      );
+
+      if (!teacherProfile) {
+        throw new Error("Teacher profile not found");
+      }
+
+      const isSubjectTeacher =
+        subjectExists.assignedTeacher &&
+        subjectExists.assignedTeacher.toString() ===
+          teacherProfileId.toString();
+
+      const isClassTeacher =
+        classExists.classTeacher &&
+        classExists.classTeacher.toString() === teacherProfileId.toString();
+
+      const isAssignedSubject = teacherProfile.assignedSubjects
+        .map((id) => id.toString())
+        .includes(subjectExists._id.toString());
+
+      const isAssignedClass = teacherProfile.assignedClasses
+        .map((id) => id.toString())
+        .includes(classExists._id.toString());
+
+      if (
+        !(
+          isSubjectTeacher ||
+          isClassTeacher ||
+          (isAssignedSubject && isAssignedClass)
+        )
+      ) {
+        throw new Error("Teacher is not assigned to this class/subject");
+      }
+    }
+
+    return { classExists, subjectExists };
+  }
+
   // Create new assignment
   async createAssignment(assignmentData, options = {}) {
     try {
@@ -15,72 +101,11 @@ class AssignmentService {
         throw new Error("Teacher is required");
       }
 
-      // Validate class exists
-      const classExists = await Class.findById(assignmentData.class);
-      if (!classExists) {
-        throw new Error("Class not found");
-      }
-
-      // Validate subject exists
-      const subjectExists = await Subject.findById(assignmentData.subject);
-      if (!subjectExists) {
-        throw new Error("Subject not found");
-      }
-
-      // Validate subject belongs to class when subject is scoped to specific classes
-      const subjectAllowedClassIds = Array.isArray(subjectExists.classIds)
-        ? subjectExists.classIds.map((id) => id.toString())
-        : [];
-      const legacyAllowed = subjectExists.classId
-        ? [subjectExists.classId.toString()]
-        : [];
-
-      const allowed = [
-        ...new Set([...subjectAllowedClassIds, ...legacyAllowed]),
-      ];
-      if (allowed.length > 0 && !allowed.includes(classExists._id.toString())) {
-        throw new Error(
-          "Selected subject does not belong to the selected class",
-        );
-      }
-
-      // Validate teacher is allowed to post for this class/subject (teacher routes and admin-on-behalf)
-      if (teacherProfileId) {
-        const teacherProfile = await Teacher.findById(teacherProfileId).select(
-          "assignedSubjects assignedClasses",
-        );
-
-        if (!teacherProfile) {
-          throw new Error("Teacher profile not found");
-        }
-
-        const isSubjectTeacher =
-          subjectExists.assignedTeacher &&
-          subjectExists.assignedTeacher.toString() ===
-            teacherProfileId.toString();
-
-        const isClassTeacher =
-          classExists.classTeacher &&
-          classExists.classTeacher.toString() === teacherProfileId.toString();
-
-        const isAssignedSubject = teacherProfile.assignedSubjects
-          .map((id) => id.toString())
-          .includes(subjectExists._id.toString());
-
-        const isAssignedClass = teacherProfile.assignedClasses
-          .map((id) => id.toString())
-          .includes(classExists._id.toString());
-
-        if (
-          !(
-            isSubjectTeacher ||
-            isClassTeacher ||
-            (isAssignedSubject && isAssignedClass)
-          )
-        ) {
-          throw new Error("Teacher is not assigned to this class/subject");
-        }
-      }
+      await this.validateClassSubjectForTeacher(
+        assignmentData.class,
+        assignmentData.subject,
+        teacherProfileId,
+      );
 
       // Validate due date is in future
       if (new Date(assignmentData.dueDate) <= new Date()) {
@@ -88,7 +113,7 @@ class AssignmentService {
       }
 
       const assignment = await Assignment.create({
-        ...assignmentData,
+        ...pick(assignmentData, ASSIGNMENT_FIELDS),
         teacher: teacherUserId,
       });
 
@@ -131,12 +156,13 @@ class AssignmentService {
 
       // Search by title
       if (filters.search) {
-        query.title = { $regex: filters.search, $options: "i" };
+        query.title = { $regex: escapeRegex(filters.search), $options: "i" };
       }
 
-      const page = parseInt(filters.page) || 1;
-      const limit = parseInt(filters.limit) || 10;
-      const skip = (page - 1) * limit;
+      const { page, limit, skip } = parsePagination(
+        filters.page,
+        filters.limit,
+      );
 
       const assignments = await Assignment.find(query)
         .populate("teacher", "name email")
@@ -196,6 +222,13 @@ class AssignmentService {
         throw new Error("Student profile not found");
       }
 
+      if (!student.classId) {
+        return {
+          assignments: [],
+          pagination: { total: 0, page: 1, pages: 0 },
+        };
+      }
+
       const query = {
         class: student.classId._id,
         status: "published",
@@ -208,12 +241,13 @@ class AssignmentService {
       }
 
       if (filters.search) {
-        query.title = { $regex: filters.search, $options: "i" };
+        query.title = { $regex: escapeRegex(filters.search), $options: "i" };
       }
 
-      const page = parseInt(filters.page) || 1;
-      const limit = parseInt(filters.limit) || 10;
-      const skip = (page - 1) * limit;
+      const { page, limit, skip } = parsePagination(
+        filters.page,
+        filters.limit,
+      );
 
       const assignments = await Assignment.find(query)
         .populate("teacher", "name email")
@@ -347,12 +381,14 @@ class AssignmentService {
       }
 
       if (filters.search) {
-        query.title = { $regex: filters.search, $options: "i" };
+        query.title = { $regex: escapeRegex(filters.search), $options: "i" };
       }
 
-      const page = parseInt(filters.page) || 1;
-      const limit = parseInt(filters.limit) || 20;
-      const skip = (page - 1) * limit;
+      const { page, limit, skip } = parsePagination(
+        filters.page,
+        filters.limit,
+        { defaultLimit: 20 },
+      );
 
       const assignments = await Assignment.find(query)
         .populate("teacher", "name email")
@@ -387,7 +423,7 @@ class AssignmentService {
 
       const updatedAssignment = await Assignment.findByIdAndUpdate(
         assignmentId,
-        updateData,
+        pick(updateData, [...ASSIGNMENT_FIELDS, "teacher", "isActive"]),
         { new: true, runValidators: true },
       )
         .populate("teacher", "name email")
@@ -433,7 +469,12 @@ class AssignmentService {
   }
 
   // Update assignment
-  async updateAssignment(assignmentId, updateData, teacherId) {
+  async updateAssignment(
+    assignmentId,
+    updateData,
+    teacherId,
+    teacherProfileId = null,
+  ) {
     try {
       const assignment = await Assignment.findOne({
         _id: assignmentId,
@@ -449,9 +490,25 @@ class AssignmentService {
         throw new Error("Due date must be in the future");
       }
 
+      // Teachers cannot reassign ownership; class/subject changes must still be
+      // ones the teacher is assigned to
+      const allowedUpdate = pick(updateData, ASSIGNMENT_FIELDS);
+      const nextClass = allowedUpdate.class ?? assignment.class;
+      const nextSubject = allowedUpdate.subject ?? assignment.subject;
+      if (
+        String(nextClass) !== String(assignment.class) ||
+        String(nextSubject) !== String(assignment.subject)
+      ) {
+        await this.validateClassSubjectForTeacher(
+          nextClass,
+          nextSubject,
+          teacherProfileId,
+        );
+      }
+
       const updatedAssignment = await Assignment.findByIdAndUpdate(
         assignmentId,
-        updateData,
+        allowedUpdate,
         { new: true, runValidators: true },
       )
         .populate("teacher", "name email")

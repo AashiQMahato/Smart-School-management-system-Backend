@@ -4,6 +4,67 @@ import Payment from "../models/payment.model.js";
 import Student from "../models/student.model.js";
 import Parent from "../models/parent.model.js";
 import mongoose from "mongoose";
+import { canAccessStudent } from "../utils/access.js";
+import { pick } from "../utils/validation.js";
+
+const FEE_STRUCTURE_FIELDS = [
+  "name",
+  "feeType",
+  "description",
+  "amount",
+  "classId",
+  "academicYear",
+  "dueDate",
+  "frequency",
+];
+
+/**
+ * Parse a payment amount coming from the client (number or numeric string)
+ */
+const parseAmount = (value) => {
+  if (value === "" || value === null || value === undefined) return NaN;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : NaN;
+};
+
+/**
+ * Atomically apply a payment to a fee so concurrent requests cannot overpay,
+ * then record the Payment. Returns { fee, payment } or null when the balance
+ * changed underneath us.
+ */
+const applyPayment = async (feeId, amount, paymentData, feeUpdates) => {
+  const fee = await Fee.findOneAndUpdate(
+    { _id: feeId, balanceDue: { $gte: amount } },
+    { $inc: { amountPaid: amount, balanceDue: -amount } },
+    { new: true },
+  );
+  if (!fee) return null;
+
+  let payment;
+  try {
+    payment = await Payment.create({ ...paymentData, amount });
+  } catch (error) {
+    // Roll back the reserved amount if the payment record could not be saved
+    await Fee.updateOne(
+      { _id: feeId },
+      { $inc: { amountPaid: -amount, balanceDue: amount } },
+    );
+    throw error;
+  }
+
+  Object.assign(fee, feeUpdates);
+  if (fee.amountPaid >= fee.totalAmount) {
+    fee.paymentStatus = "paid";
+    fee.balanceDue = 0;
+    fee.receiptNumber = payment.receiptNumber;
+  } else {
+    fee.paymentStatus = "partial";
+    fee.balanceDue = fee.totalAmount - fee.amountPaid;
+  }
+  await fee.save();
+
+  return { fee, payment };
+};
 
 // ═══════════════════════════════════════════════════
 // FEE STRUCTURE ENDPOINTS (ADMIN)
@@ -74,7 +135,7 @@ export const getAllFeeStructures = async (req, res) => {
 export const updateFeeStructure = async (req, res) => {
   try {
     const { id } = req.params;
-    const structure = await FeeStructure.findByIdAndUpdate(id, req.body, { new: true, runValidators: true })
+    const structure = await FeeStructure.findByIdAndUpdate(id, pick(req.body, FEE_STRUCTURE_FIELDS), { new: true, runValidators: true })
       .populate("classId", "name section");
 
     if (!structure) {
@@ -332,17 +393,15 @@ export const getFeesByStudent = async (req, res) => {
     const { studentId } = req.params;
     const { feeType, paymentStatus, academicYear } = req.query;
 
-    // Authorization check
-    if (req.user.role === "student") {
-      const student = await Student.findOne({ userId: req.user._id });
-      if (!student || student._id.toString() !== studentId) {
-        return res.status(403).json({ success: false, message: "You can only view your own fees" });
-      }
-    } else if (req.user.role === "parent") {
-      const parent = await Parent.findOne({ userId: req.user._id });
-      if (!parent || !parent.children.some((c) => c.toString() === studentId)) {
-        return res.status(403).json({ success: false, message: "You can only view your children's fees" });
-      }
+    // Authorization check (student: own, parent: children, teacher: own classes)
+    if (!(await canAccessStudent(req.user, studentId))) {
+      const message =
+        req.user.role === "student"
+          ? "You can only view your own fees"
+          : req.user.role === "parent"
+            ? "You can only view your children's fees"
+            : "You can only view fees for students you teach";
+      return res.status(403).json({ success: false, message });
     }
 
     const query = { studentId };
@@ -425,14 +484,15 @@ export const getMyFees = async (req, res) => {
 export const recordPayment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { amountPaid, paymentMethod, transactionRef, remarks } = req.body;
+    const { paymentMethod, transactionRef, remarks } = req.body;
+    const amountPaid = parseAmount(req.body.amountPaid);
 
     const fee = await Fee.findById(id);
     if (!fee) {
       return res.status(404).json({ success: false, message: "Fee not found" });
     }
 
-    if (amountPaid <= 0) {
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
       return res.status(400).json({ success: false, message: "Payment amount must be greater than 0" });
     }
 
@@ -440,36 +500,31 @@ export const recordPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: `Payment amount cannot exceed balance due (${fee.balanceDue})` });
     }
 
-    // Create payment record
-    const payment = await Payment.create({
-      feeId: fee._id,
-      studentId: fee.studentId,
-      amount: amountPaid,
-      paymentMethod: paymentMethod || "cash",
-      transactionRef,
-      paidBy: "admin",
-      paidByUserId: req.user._id,
-      collectedBy: req.user._id,
-      remarks,
-    });
+    const applied = await applyPayment(
+      fee._id,
+      amountPaid,
+      {
+        feeId: fee._id,
+        studentId: fee.studentId,
+        paymentMethod: paymentMethod || "cash",
+        transactionRef,
+        paidBy: "admin",
+        paidByUserId: req.user._id,
+        collectedBy: req.user._id,
+        remarks,
+      },
+      {
+        paymentMethod: paymentMethod || "cash",
+        transactionRef,
+        paidDate: new Date(),
+        collectedBy: req.user._id,
+      },
+    );
 
-    // Update fee
-    fee.amountPaid += amountPaid;
-    fee.paymentMethod = paymentMethod || "cash";
-    fee.transactionRef = transactionRef;
-    fee.paidDate = new Date();
-    fee.collectedBy = req.user._id;
-
-    if (fee.amountPaid >= fee.totalAmount) {
-      fee.paymentStatus = "paid";
-      fee.balanceDue = 0;
-      fee.receiptNumber = payment.receiptNumber;
-    } else {
-      fee.paymentStatus = "partial";
-      fee.balanceDue = fee.totalAmount - fee.amountPaid;
+    if (!applied) {
+      return res.status(409).json({ success: false, message: "Fee balance changed. Please refresh and try again" });
     }
-
-    await fee.save();
+    const { payment } = applied;
 
     const populatedFee = await Fee.findById(id).populate({
       path: "studentId",
@@ -494,10 +549,11 @@ export const recordPayment = async (req, res) => {
 export const parentPayment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { amountPaid, paymentMethod, transactionRef } = req.body;
+    const { paymentMethod, transactionRef } = req.body;
+    const amountPaid = parseAmount(req.body.amountPaid);
 
     const fee = await Fee.findById(id).populate("studentId");
-    if (!fee) {
+    if (!fee || !fee.studentId) {
       return res.status(404).json({ success: false, message: "Fee not found" });
     }
 
@@ -507,7 +563,7 @@ export const parentPayment = async (req, res) => {
       return res.status(403).json({ success: false, message: "You can only pay fees for your children" });
     }
 
-    if (amountPaid <= 0) {
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
       return res.status(400).json({ success: false, message: "Payment amount must be greater than 0" });
     }
 
@@ -515,33 +571,29 @@ export const parentPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: `Payment amount cannot exceed balance due (${fee.balanceDue})` });
     }
 
-    // Create payment record
-    const payment = await Payment.create({
-      feeId: fee._id,
-      studentId: fee.studentId._id,
-      amount: amountPaid,
-      paymentMethod: paymentMethod || "online",
-      transactionRef: transactionRef || `TXN-${Date.now()}`,
-      paidBy: "parent",
-      paidByUserId: req.user._id,
-    });
+    const txnRef = transactionRef || `TXN-${Date.now()}`;
+    const applied = await applyPayment(
+      fee._id,
+      amountPaid,
+      {
+        feeId: fee._id,
+        studentId: fee.studentId._id,
+        paymentMethod: paymentMethod || "online",
+        transactionRef: txnRef,
+        paidBy: "parent",
+        paidByUserId: req.user._id,
+      },
+      {
+        paymentMethod: paymentMethod || "online",
+        transactionRef: txnRef,
+        paidDate: new Date(),
+      },
+    );
 
-    // Update fee
-    fee.amountPaid += amountPaid;
-    fee.paymentMethod = paymentMethod || "online";
-    fee.transactionRef = payment.transactionRef;
-    fee.paidDate = new Date();
-
-    if (fee.amountPaid >= fee.totalAmount) {
-      fee.paymentStatus = "paid";
-      fee.balanceDue = 0;
-      fee.receiptNumber = payment.receiptNumber;
-    } else {
-      fee.paymentStatus = "partial";
-      fee.balanceDue = fee.totalAmount - fee.amountPaid;
+    if (!applied) {
+      return res.status(409).json({ success: false, message: "Fee balance changed. Please refresh and try again" });
     }
-
-    await fee.save();
+    const { payment } = applied;
 
     const populatedFee = await Fee.findById(id).populate({
       path: "studentId",
@@ -567,17 +619,9 @@ export const getPaymentHistory = async (req, res) => {
   try {
     const { studentId } = req.params;
 
-    // Authorization
-    if (req.user.role === "student") {
-      const student = await Student.findOne({ userId: req.user._id });
-      if (!student || student._id.toString() !== studentId) {
-        return res.status(403).json({ success: false, message: "Unauthorized" });
-      }
-    } else if (req.user.role === "parent") {
-      const parent = await Parent.findOne({ userId: req.user._id });
-      if (!parent || !parent.children.some((c) => c.toString() === studentId)) {
-        return res.status(403).json({ success: false, message: "Unauthorized" });
-      }
+    // Authorization (student: own, parent: children, teacher: own classes)
+    if (!(await canAccessStudent(req.user, studentId))) {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
     }
 
     const payments = await Payment.find({ studentId, status: "success" })

@@ -93,7 +93,7 @@ const calendarEventSchema = new mongoose.Schema(
 );
 
 // Validate end date is after or equal to start date
-calendarEventSchema.pre("validate", function (next) {
+calendarEventSchema.pre("validate", function () {
   if (this.endDate && this.startDate && this.endDate < this.startDate) {
     this.invalidate("endDate", "End date must be on or after start date");
   }

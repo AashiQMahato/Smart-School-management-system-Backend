@@ -5,6 +5,7 @@
 
 import express from "express";
 import { authenticate, authorize } from "../middleware/auth.middleware.js";
+import { aiLimiter } from "../middleware/security.middleware.js";
 import {
   getAdminAnalytics,
   getTeacherAnalytics,
@@ -16,6 +17,8 @@ const router = express.Router();
 
 // All routes require authentication
 router.use(authenticate);
+// Every analytics endpoint calls the Groq API
+router.use(aiLimiter);
 
 router.get("/admin", authorize(["admin"]), getAdminAnalytics);
 router.get("/teacher", authorize(["teacher"]), getTeacherAnalytics);

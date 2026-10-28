@@ -112,7 +112,7 @@ scheduleSchema.index({ teacherId: 1, dayOfWeek: 1, academicYear: 1 });
 scheduleSchema.index({ room: 1, dayOfWeek: 1, academicYear: 1 });
 
 // Validate that end time is after start time
-scheduleSchema.pre("validate", function (req, res) {
+scheduleSchema.pre("validate", function () {
   if (this.startTime && this.endTime) {
     const [startHour, startMin] = this.startTime.split(":").map(Number);
     const [endHour, endMin] = this.endTime.split(":").map(Number);

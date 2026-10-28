@@ -27,8 +27,12 @@ import {
   getReceipt,
 } from "../controllers/fee.controller.js";
 import { authenticate, authorize } from "../middleware/auth.middleware.js";
+import { validateObjectIdParams } from "../utils/validation.js";
 
 const router = express.Router();
+
+// Malformed ids in the URL return 400 instead of a CastError 500
+validateObjectIdParams(router, ["id", "studentId", "paymentId"]);
 
 // All routes require authentication
 router.use(authenticate);

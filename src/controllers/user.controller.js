@@ -5,6 +5,12 @@ import Teacher from "../models/teacher.model.js";
 import Admin from "../models/admin.model.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import env from "../config/env.js";
+
+// Used to keep login timing constant when the email does not exist
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync("ssms-dummy-password", 10);
+
+const MIN_PASSWORD_LENGTH = 6;
 
 /**
  * User Controller
@@ -22,25 +28,30 @@ export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
+    if (
+      !email ||
+      !password ||
+      typeof email !== "string" ||
+      typeof password !== "string"
+    ) {
       return res.status(400).json({
         success: false,
         message: "Email and password are required",
       });
     }
 
-    // Find user
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid credentials",
-      });
-    }
+    // Find user (emails are stored lowercase)
+    const user = await User.findOne({
+      email: email.trim().toLowerCase(),
+    }).select("+password");
 
-    // Verify password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
+    // Verify password (compare against a dummy hash when the user is missing
+    // so response timing does not reveal which emails exist)
+    const isMatch = await bcrypt.compare(
+      password,
+      user?.password || DUMMY_PASSWORD_HASH,
+    );
+    if (!user || !isMatch) {
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
@@ -54,8 +65,8 @@ export const login = async (req, res) => {
     // Generate JWT token
     const token = jwt.sign(
       { id: user._id, role: user.role, profileId: user.profileId },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" },
+      env.jwtSecret,
+      { expiresIn: env.jwtExpiresIn, algorithm: "HS256" },
     );
 
     // Fetch role-specific profile using profileId from User model
@@ -132,10 +143,10 @@ export const login = async (req, res) => {
       roleProfile,
     });
   } catch (err) {
+    console.error("Login error:", err);
     res.status(500).json({
       success: false,
       message: "Server error",
-      error: err.message,
     });
   }
 };
@@ -149,6 +160,12 @@ export const getUsersByRole = async (req, res) => {
 
     const query = {};
     if (role) {
+      if (!["student", "parent", "teacher", "admin"].includes(role)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid role specified",
+        });
+      }
       query.role = role;
     }
 
@@ -271,6 +288,99 @@ export const getCurrentUser = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to get current user",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Update current user's own contact details
+ * Only non-privileged fields can be changed here (never role/email/profile).
+ */
+export const updateCurrentUser = async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    if (phone !== undefined) {
+      if (typeof phone !== "string" || !phone.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Phone must be a non-empty string",
+        });
+      }
+      req.user.phone = phone.trim();
+    }
+
+    await req.user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile updated successfully",
+      user: req.user.toPublicJSON(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update profile",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Change current user's password (requires the current password)
+ */
+export const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (
+      typeof currentPassword !== "string" ||
+      typeof newPassword !== "string" ||
+      !currentPassword ||
+      !newPassword
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password and new password are required",
+      });
+    }
+
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({
+        success: false,
+        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+      });
+    }
+
+    const user = await User.findById(req.user._id).select("+password");
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password is incorrect",
+      });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.passwordChangedAt = new Date();
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Password changed successfully",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to change password",
       error: error.message,
     });
   }

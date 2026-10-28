@@ -79,7 +79,7 @@ const paymentSchema = new mongoose.Schema(
 );
 
 // Generate receipt number before save
-paymentSchema.pre("save", function (next) {
+paymentSchema.pre("save", function () {
   if (!this.receiptNumber) {
     this.receiptNumber = `RCP-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
   }

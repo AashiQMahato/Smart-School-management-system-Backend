@@ -188,14 +188,24 @@ npm install
 
 ## Configure Environment Variables
 
-Create a `.env` file:
+Copy `.env.example` to `.env` and fill in the values:
 
-```env id="g4pmbf"
-PORT=5000
-MONGO_URI=your_mongodb_connection
-JWT_SECRET=your_jwt_secret
-CLIENT_URL=http://localhost:5173
+```bash
+cp .env.example .env
 ```
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `MONGO_URI` | yes | MongoDB connection string |
+| `JWT_SECRET` | yes | Long random secret for signing JWTs (32+ chars) |
+| `PORT` | no | HTTP port (default `8080`) |
+| `NODE_ENV` | no | `production` hides internal error details |
+| `JWT_EXPIRES_IN` | no | Token lifetime (default `1d`) |
+| `CORS_ORIGINS` | no | Comma-separated allowed origins (defaults to the deployed frontend and localhost dev ports) |
+| `TRUST_PROXY` | no | Express `trust proxy` value (default `1`) |
+| `GROQ_API_KEY` | no | Enables the AI assistant and analytics endpoints |
+
+The server refuses to start when a required variable is missing.
 
 ---
 

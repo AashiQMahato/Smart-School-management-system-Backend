@@ -516,7 +516,8 @@ export const getStudentAnalytics = async (req, res) => {
     }
 
     const [results, attendances] = await Promise.all([
-      Result.find({ studentId: student._id, academicYear })
+      // Students/parents must never see unpublished marks
+      Result.find({ studentId: student._id, academicYear, isPublished: true })
         .populate("subjectId", "name")
         .lean(),
       Attendance.find({
@@ -681,7 +682,11 @@ export const getParentAnalytics = async (req, res) => {
     const childIds = children.map((c) => c._id);
 
     const [results, attendances] = await Promise.all([
-      Result.find({ studentId: { $in: childIds }, academicYear })
+      Result.find({
+        studentId: { $in: childIds },
+        academicYear,
+        isPublished: true,
+      })
         .populate("subjectId", "name")
         .lean(),
       Attendance.find({

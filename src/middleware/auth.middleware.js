@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import User from "../models/user.model.js";
+import env from "../config/env.js";
 
 /**
  * Authenticate user using JWT token
@@ -15,12 +16,10 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    if (!process.env.JWT_SECRET) {
-      throw new Error("JWT_SECRET is not defined");
-    }
-
-    const token = authHeader.replace("Bearer ", "");
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const token = authHeader.slice("Bearer ".length).trim();
+    const decoded = jwt.verify(token, env.jwtSecret, {
+      algorithms: ["HS256"],
+    });
 
     if (!decoded?.id) {
       return res.status(401).json({
@@ -29,12 +28,24 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    const user = await User.findById(decoded.id).select("-password");
+    const user = await User.findById(decoded.id).select("+passwordChangedAt");
 
     if (!user) {
       return res.status(401).json({
         success: false,
         message: "User not found",
+      });
+    }
+
+    // Reject tokens issued before the user's last password change
+    if (
+      user.passwordChangedAt &&
+      decoded.iat &&
+      decoded.iat * 1000 < user.passwordChangedAt.getTime() - 1000
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Token expired",
       });
     }
 

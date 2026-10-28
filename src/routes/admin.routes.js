@@ -1,8 +1,19 @@
 import express from "express";
 import adminController from "../controllers/admin.controller.js";
 import { authenticate, authorize } from "../middleware/auth.middleware.js";
+import { validateObjectIdParams } from "../utils/validation.js";
 
 const router = express.Router();
+
+// Malformed ids in the URL return 400 instead of a CastError 500
+validateObjectIdParams(router, [
+  "id",
+  "classId",
+  "userId",
+  "teacherId",
+  "parentId",
+  "studentId",
+]);
 
 // All admin routes require authentication + admin role
 router.use(authenticate);

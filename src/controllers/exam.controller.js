@@ -1,14 +1,35 @@
 import examResultService from "../services/examResult.service.js";
-import Student from "../models/student.model.js";
 import Parent from "../models/parent.model.js";
 import Teacher from "../models/teacher.model.js";
+import { canAccessStudent, isTeacherOfClass } from "../utils/access.js";
+import { pick } from "../utils/validation.js";
+
+// Fields an admin may set directly; publish/approval state goes through the
+// dedicated workflow endpoints
+const EXAM_FIELDS = [
+  "name",
+  "examType",
+  "academicYear",
+  "startDate",
+  "endDate",
+  "classes",
+  "description",
+  "status",
+];
+const EXAM_SUBJECT_FIELDS = [
+  "subjectId",
+  "classId",
+  "maxMarks",
+  "passingMarks",
+  "examDate",
+];
 
 // ============ EXAM MANAGEMENT (Admin) ============
 
 export const createExam = async (req, res) => {
   try {
     const exam = await examResultService.createExam({
-      ...req.body,
+      ...pick(req.body, EXAM_FIELDS),
       createdBy: req.user._id,
     });
     res.status(201).json({ success: true, data: exam });
@@ -41,7 +62,10 @@ export const getExamById = async (req, res) => {
 
 export const updateExam = async (req, res) => {
   try {
-    const exam = await examResultService.updateExam(req.params.id, req.body);
+    const exam = await examResultService.updateExam(
+      req.params.id,
+      pick(req.body, EXAM_FIELDS),
+    );
     if (!exam)
       return res
         .status(404)
@@ -68,14 +92,14 @@ export const deleteExam = async (req, res) => {
 export const addExamSubjects = async (req, res) => {
   try {
     const { subjects } = req.body;
-    if (!subjects || !subjects.length) {
+    if (!Array.isArray(subjects) || !subjects.length) {
       return res
         .status(400)
         .json({ success: false, message: "Subjects array required" });
     }
     const data = await examResultService.addExamSubjects(
       req.params.examId,
-      subjects,
+      subjects.map((sub) => pick(sub, EXAM_SUBJECT_FIELDS)),
     );
     res.status(201).json({ success: true, data });
   } catch (error) {
@@ -104,7 +128,7 @@ export const updateExamSubject = async (req, res) => {
   try {
     const data = await examResultService.updateExamSubject(
       req.params.id,
-      req.body,
+      pick(req.body, EXAM_SUBJECT_FIELDS),
     );
     res.status(200).json({ success: true, data });
   } catch (error) {
@@ -117,7 +141,7 @@ export const updateExamSubject = async (req, res) => {
 export const enterMarks = async (req, res) => {
   try {
     const { examSubjectId, marks } = req.body;
-    if (!marks || !marks.length) {
+    if (!Array.isArray(marks) || !marks.length) {
       return res
         .status(400)
         .json({ success: false, message: "Marks array required" });
@@ -235,6 +259,22 @@ export const unpublishExamResults = async (req, res) => {
 
 export const getExamResults = async (req, res) => {
   try {
+    if (req.user.role === "teacher") {
+      const { classId, subjectId } = req.query;
+      if (!classId || !(await isTeacherOfClass(req.user, classId))) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only view results for classes you teach",
+        });
+      }
+      if (subjectId && !(await isTeacherOfClass(req.user, classId, subjectId))) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only view results for subjects you teach",
+        });
+      }
+    }
+
     const data = await examResultService.getExamResults(
       req.params.examId,
       req.query.classId,
@@ -248,6 +288,16 @@ export const getExamResults = async (req, res) => {
 
 export const getClassAnalytics = async (req, res) => {
   try {
+    if (
+      req.user.role === "teacher" &&
+      !(await isTeacherOfClass(req.user, req.params.classId))
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only view analytics for classes you teach",
+      });
+    }
+
     const data = await examResultService.getClassAnalytics(
       req.params.examId,
       req.params.classId,
@@ -334,19 +384,9 @@ export const getReportCard = async (req, res) => {
     const { studentId } = req.params;
     const { examId } = req.query;
 
-    if (req.user.role === "student") {
-      if (!req.user.profileId || req.user.profileId.toString() !== studentId) {
-        return res
-          .status(403)
-          .json({ success: false, message: "Access denied" });
-      }
-    } else if (req.user.role === "parent") {
-      const parent = await Parent.findById(req.user.profileId);
-      if (!parent || !parent.children.some((c) => c.toString() === studentId)) {
-        return res
-          .status(403)
-          .json({ success: false, message: "Access denied" });
-      }
+    // Student: own; parent: linked children; teacher: students they teach
+    if (!(await canAccessStudent(req.user, studentId))) {
+      return res.status(403).json({ success: false, message: "Access denied" });
     }
 
     const data = await examResultService.getReportCardData(studentId, examId);

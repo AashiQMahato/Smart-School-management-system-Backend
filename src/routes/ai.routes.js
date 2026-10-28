@@ -1,5 +1,6 @@
 import express from "express";
 import { authenticate } from "../middleware/auth.middleware.js";
+import { aiLimiter } from "../middleware/security.middleware.js";
 import {
   chatWithAssistant,
   getChatContextPreview,
@@ -11,7 +12,7 @@ const router = express.Router();
 router.use(authenticate);
 
 // Chatbot: conversational assistant for dashboards
-router.post("/chat", chatWithAssistant);
+router.post("/chat", aiLimiter, chatWithAssistant);
 
 // Optional: quick way to debug what context the assistant sees (no secrets)
 router.get("/context-preview", getChatContextPreview);

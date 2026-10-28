@@ -142,7 +142,7 @@ const gradePointMap = {
 };
 
 // Pre-save middleware to calculate percentage, grade, gradePoint, status
-resultSchema.pre("save", function (next) {
+resultSchema.pre("save", function () {
   if (this.marksObtained !== undefined && this.maxMarks) {
     this.percentage = (this.marksObtained / this.maxMarks) * 100;
 
